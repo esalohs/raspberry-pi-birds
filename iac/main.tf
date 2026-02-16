@@ -9,6 +9,14 @@ resource "aws_s3_bucket" "cam_birds_bucket" {
   bucket = "${var.bucket_name}-${data.aws_caller_identity.current.account_id}"
 }
 
+// Bucket Versioning
+resource "aws_s3_bucket_versioning" "versioning" {
+  bucket = aws_s3_bucket.cam_birds_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 // Create User
 resource "aws_iam_user" "restricted_user" {
   name = "bird-user"
