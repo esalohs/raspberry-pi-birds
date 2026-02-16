@@ -5,7 +5,8 @@ import random
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
-from datetime import datetime
+from datetime import datetime, timedelta
+import zoneinfo
 
 s3 = boto3.client('s3')
 ses = boto3.client('ses')
@@ -28,10 +29,12 @@ def lambda_handler(event, context):
     """
     
     # Get today's date folder (MM-DD-YYYY)
-    today = datetime.now().strftime("%m-%d-%Y")
-    prefix = f"{today}/"
-    
-    print(f"Looking for bird images in folder: {prefix}")
+    uk_tz = zoneinfo.ZoneInfo("Europe/London")
+    uk_now = datetime.now(uk_tz)
+    yesterday_uk = (uk_now - timedelta(days=1)).strftime("%m-%d-%Y")
+    prefix = f"{yesterday_uk}/"
+
+    print(f"Looking for images in S3 folder: {prefix}")
     
     try:
         # List all objects in today's folder
@@ -44,7 +47,7 @@ def lambda_handler(event, context):
             print(f"No images found in {prefix}")
             return {
                 'statusCode': 200,
-                'body': json.dumps(f'No bird images found for {today}')
+                'body': json.dumps(f'No bird images found for {yesterday_uk}')
             }
         
         # Filter for bird images only (in case there are other files)
@@ -58,7 +61,7 @@ def lambda_handler(event, context):
             print(f"No bird images found in {prefix}")
             return {
                 'statusCode': 200,
-                'body': json.dumps(f'No bird images detected for {today}')
+                'body': json.dumps(f'No bird images detected for {yesterday_uk}')
             }
         
         print(f"Found {len(bird_images)} bird images in {prefix}")
@@ -66,7 +69,9 @@ def lambda_handler(event, context):
         # Pick a random bird image
         selected_image = random.choice(bird_images)
         key = selected_image['Key']
-        
+        timestamp_obj = selected_image['LastModified'] 
+        timestamp_image = timestamp_obj.astimezone(uk_tz).strftime("%Y-%m-%d %H:%M:%S")
+
         print(f"Selected random bird image: {key}")
         
         # Download the image
@@ -75,53 +80,27 @@ def lambda_handler(event, context):
         
         filename = key.split('/')[-1]
         
-        # Parse bird info from filename
-        # e.g., img_20250210_143052_birds_2_conf_0.87.jpg
-        # num_birds = "unknown"
-        # confidence = "unknown"
-        # timestamp = "unknown"
-        
-        # parts = filename.replace('.jpg', '').split('_')
-        
-        # # Extract timestamp if present (img_YYYYMMDD_HHMMSS_...)
-        # if len(parts) >= 3:
-        #     try:
-        #         date_part = parts[1]
-        #         time_part = parts[2]
-        #         timestamp = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
-        #     except:
-        #         pass
-        
-        # # Extract bird count
-        # if 'birds' in parts:
-        #     idx = parts.index('birds')
-        #     if idx + 1 < len(parts):
-        #         num_birds = parts[idx + 1]
-        
-        # # Extract confidence
-        # if 'conf' in parts:
-        #     conf_idx = parts.index('conf')
-        #     if conf_idx + 1 < len(parts):
-        #         confidence = parts[conf_idx + 1]
         
         # Create email
-        subject = f"🐦 Daily Bird Photo from River Cam - {today}"
+        subject = f"🐦 Daily Bird Photo from River Cam - {yesterday_uk}"
         
         msg = MIMEMultipart()
         msg['From'] = FROM_EMAIL
         msg['To'] = ', '.join(TO_EMAILS)
         msg['Subject'] = subject
-# 🐦 Birds detected: {num_birds}
-# 🎯 Detection confidence: {confidence}
-# ⏰ Captured at: {timestamp}
-# 📊 Total bird photos today: {len(bird_images)}        
+
+
+        
         body = f"""
 Hello bird watchers!
 
-Here's today's random bird sighting from the River Cam!
+Here's yesterday's random bird sighting from the River Cam!
 
-📅 Date: {today}
+📅 Date: {yesterday_uk}
 📸 Image: {filename}
+📊 Total bird photos yesterday: {len(bird_images)}
+⏰ Captured at: {timestamp_image}
+🎯 Detection confidence: 15%
 
 
 See the attached photo with detection boxes around the bird(s).
