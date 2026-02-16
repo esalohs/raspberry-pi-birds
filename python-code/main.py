@@ -21,9 +21,14 @@ LOCAL_BACKUP_DIR = Path("bird_detections_backup")
 LOCAL_BACKUP_DIR.mkdir(exist_ok=True)
 SAVE_LOCAL_BACKUP = True  # Set to False if you only want S3
 
+# Motion capture directory (saves all motion, even non-birds)
+MOTION_DIR = Path("motion_captures")
+MOTION_DIR.mkdir(exist_ok=True)
+SAVE_ALL_MOTION = True  # Set to False to only save confirmed birds
+
 # YOLO settings
 MODEL_PATH = "yolov8n.pt"
-BIRD_CONFIDENCE = 0.25
+BIRD_CONFIDENCE = 0.15
 
 # Motion detection settings
 MIN_CONTOUR_AREA = 500      # Minimum size (filters out tiny noise)
@@ -82,12 +87,14 @@ class BirdDetectionCamera:
         print(f"☁️  Uploading to: s3://{S3_BUCKET_NAME}/MM-DD-YYYY/")
         if SAVE_LOCAL_BACKUP:
             print(f"💾 Local backup: {LOCAL_BACKUP_DIR}")
+        if SAVE_ALL_MOTION:
+            print(f"📁 All motion saved to: {MOTION_DIR}")
         print()
     
     def detect_motion(self, frame1, frame2):
         """
         Detect motion between two frames
-        Returns: (has_motion, motion_areas)
+        Returns: (has_motion, motion_areas, bounding_boxes)
         """
         # Convert to grayscale
         gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
@@ -112,6 +119,7 @@ class BirdDetectionCamera:
         # Check for significant motion
         has_motion = False
         motion_areas = []
+        bounding_boxes = []
         
         for contour in contours:
             area = cv2.contourArea(contour)
@@ -120,16 +128,57 @@ class BirdDetectionCamera:
             if MIN_CONTOUR_AREA < area < MAX_CONTOUR_AREA:
                 has_motion = True
                 motion_areas.append(area)
+                
+                # Get bounding box and add padding
+                x, y, w, h = cv2.boundingRect(contour)
+                # Add 50% padding around the motion area
+                padding = max(w, h) // 2
+                x1 = max(0, x - padding)
+                y1 = max(0, y - padding)
+                x2 = min(frame1.shape[1], x + w + padding)
+                y2 = min(frame1.shape[0], y + h + padding)
+                bounding_boxes.append((x1, y1, x2, y2))
         
-        return has_motion, motion_areas
+        return has_motion, motion_areas, bounding_boxes
     
-    def detect_bird(self, frame):
+    def detect_bird(self, frame, bounding_boxes=None):
         """
         Run YOLO bird detection on frame
+        If bounding_boxes provided, check those regions with extra crops for better detection
         Returns: result object from YOLO
         """
+        # First try full frame
         results = self.model(frame, classes=[14], conf=BIRD_CONFIDENCE, verbose=False)
+        
+        # If no birds found and we have motion regions, try cropped regions with lower confidence
+        if len(results[0].boxes) == 0 and bounding_boxes:
+            for bbox in bounding_boxes:
+                x1, y1, x2, y2 = bbox
+                cropped = frame[y1:y2, x1:x2]
+                
+                # Skip if crop is too small
+                if cropped.shape[0] < 50 or cropped.shape[1] < 50:
+                    continue
+                
+                # Try detection on cropped region with lower confidence
+                crop_results = self.model(cropped, classes=[14], conf=BIRD_CONFIDENCE * 0.7, verbose=False)
+                
+                if len(crop_results[0].boxes) > 0:
+                    # Found a bird in the cropped region! Use full frame result
+                    return results[0]
+        
         return results[0]
+    
+    def save_motion_image(self, frame, motion_areas):
+        """
+        Save motion detection image locally for review
+        Returns: filepath
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"motion_{timestamp}_areas_{len(motion_areas)}.jpg"
+        filepath = MOTION_DIR / filename
+        cv2.imwrite(str(filepath), frame)
+        return filepath
     
     def upload_to_s3(self, frame, result):
         """
@@ -216,15 +265,21 @@ class BirdDetectionCamera:
                 if prev_frame is not None:
                     checks += 1
                     
-                    has_motion, areas = self.detect_motion(prev_frame, frame_bgr)
+                    has_motion, areas, bboxes = self.detect_motion(prev_frame, frame_bgr)
                     
                     if has_motion:
                         motion_detections += 1
                         print(f"\n🚨 Motion #{motion_detections} detected! Areas: {areas}")
+                        
+                        # Save motion image locally for review (before bird detection)
+                        if SAVE_ALL_MOTION:
+                            motion_file = self.save_motion_image(frame_bgr, areas)
+                            print(f"   📁 Motion saved: {motion_file.name}")
+                        
                         print(f"   Running bird detection...")
                         
-                        # Run bird detection
-                        result = self.detect_bird(frame_bgr)
+                        # Run bird detection with motion regions for better small bird detection
+                        result = self.detect_bird(frame_bgr, bboxes)
                         
                         # Check if birds detected
                         if len(result.boxes) > 0:
@@ -268,6 +323,8 @@ class BirdDetectionCamera:
             print(f"☁️  Images uploaded to: s3://{S3_BUCKET_NAME}/MM-DD-YYYY/")
             if SAVE_LOCAL_BACKUP:
                 print(f"💾 Local backups in: {LOCAL_BACKUP_DIR}")
+            if SAVE_ALL_MOTION:
+                print(f"📁 All motion in: {MOTION_DIR}")
 
 # ==========================
 # MAIN
@@ -277,4 +334,4 @@ if __name__ == "__main__":
     
     # Run forever (or specify hours)
     # camera.run()  # Run forever
-    camera.run(duration_hours=4)  # Run for 4 hours
+    camera.run(duration_hours=6)  # Run for 4 hours
