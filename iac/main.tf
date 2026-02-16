@@ -194,6 +194,30 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
   retention_in_days = 7
 }
 
+# EventBridge Rule to trigger Lambda daily at 7 AM UK time
+resource "aws_cloudwatch_event_rule" "daily_bird_email" {
+  name                = "daily-bird-email"
+  description         = "Trigger bird email Lambda daily at 7 AM UK time"
+  schedule_expression = "cron(0 7 * * ? *)" # UTC
+}
+
+# Give the rule permission to invoke Lambda
+resource "aws_lambda_permission" "allow_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.bird_email.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.daily_bird_email.arn
+}
+
+# EventBridge target (connect rule to Lambda)
+resource "aws_cloudwatch_event_target" "daily_bird_email_target" {
+  rule      = aws_cloudwatch_event_rule.daily_bird_email.name
+  target_id = "LambdaTarget"
+  arn       = aws_lambda_function.bird_email.arn
+}
+
+
 
 
 
