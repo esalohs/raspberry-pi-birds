@@ -28,7 +28,7 @@ SAVE_ALL_MOTION = True  # Set to False to only save confirmed birds
 
 # YOLO settings
 MODEL_PATH = "yolov8n.pt"
-BIRD_CONFIDENCE = 0.15
+BIRD_CONFIDENCE = 0.25
 
 # Motion detection settings
 MIN_CONTOUR_AREA = 500      # Minimum size (filters out tiny noise)
@@ -194,8 +194,24 @@ class BirdDetectionCamera:
         confidences = [float(box.conf[0]) for box in result.boxes]
         avg_conf = sum(confidences) / len(confidences) if confidences else 0
         
-        # Draw boxes on image
-        annotated_frame = result.plot()
+        # Draw padded bounding boxes manually
+        annotated_frame = frame.copy()
+        BOX_PADDING = 40  # Pixels to pad around each detection
+
+        for box in result.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
+
+            # Apply padding
+            x1 = max(0, x1 - BOX_PADDING)
+            y1 = max(0, y1 - BOX_PADDING)
+            x2 = min(frame.shape[1], x2 + BOX_PADDING)
+            y2 = min(frame.shape[0], y2 + BOX_PADDING)
+
+            # Draw box and label
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(annotated_frame, f"bird {conf:.2f}", (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
         
         # Create filename
         filename = f"bird_{timestamp}_count_{num_birds}_conf_{avg_conf:.2f}.jpg"
@@ -334,4 +350,4 @@ if __name__ == "__main__":
     
     # Run forever (or specify hours)
     # camera.run()  # Run forever
-    camera.run(duration_hours=6)  # Run for 4 hours
+    camera.run(duration_hours=7)  # Run for 4 hours
