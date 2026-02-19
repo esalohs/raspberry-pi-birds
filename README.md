@@ -1,5 +1,6 @@
 # raspberry-pi-birds
 
+![Project Diagram](images/raspberry-pi-diagram.png)
 
 ### Package Requirements
 1. AWS CLI
