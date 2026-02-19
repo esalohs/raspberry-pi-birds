@@ -79,6 +79,8 @@ def lambda_handler(event, context):
         image_data = image_obj['Body'].read()
         
         filename = key.split('/')[-1]
+        confidence = filename.split('_')[-1].split('.')[-1]
+
         
         
         # Create email
@@ -100,7 +102,7 @@ Here's yesterday's random bird sighting from the River Cam!
 📸 Image: {filename}
 📊 Total bird photos yesterday: {len(bird_images)}
 ⏰ Captured at: {timestamp_image}
-🎯 Detection confidence: 15%
+🎯 Detection confidence: {confidence}%
 
 
 See the attached photo with detection boxes around the bird(s).
