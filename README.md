@@ -10,14 +10,18 @@
 5. Raspberry Pi Camera
 
 ### Execution
-1. Run git clone to clone this repo down
-2. Create a named AWS Profile in `~/.aws/credentials`
-3. Update terraform.tfvars with:
+1. Clone this repo down
+   ```bash
+   git clone https://github.com/esalohs/raspberry-pi-birds.git
+   cd raspberry-pi-birds
+   ```
+3. Create a named AWS Profile in `~/.aws/credentials`
+4. Update terraform.tfvars with:
    ```bash
    cd iac
    vi terraform.tfvars
    ```
-4. Run the following to create:
+5. Run the following to create:
    - S3 bucket
    - AWS IAM User and Access Keys --> these will be used by the python script to upload objects to S3
    - Lambda Function
@@ -28,15 +32,15 @@
    terraform apply
    bash ./postDeployment.sh
    ```
-5. CD into `python-code` and update any variables in `main.py`
-6. Run
+6. CD into `python-code` and update any variables in `main.py`
+7. Run
    ```bash
    python3 -m venv --system-site-packages venv
    source venv/bin/activate
    pip install opencv-python ultralytics boto3
    python ./main.py
    ```
-7. To schedule the job to run, for example, every day at 8 am, run
+8. To schedule the job to run, for example, every day at 8 am, run
    ```
    crontab -e
    # add this line
