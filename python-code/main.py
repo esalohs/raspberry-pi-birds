@@ -7,14 +7,15 @@ from datetime import datetime
 from pathlib import Path
 import boto3
 from io import BytesIO
+import os
 
 # ==========================
 # CONFIG
 # ==========================
 # S3 settings
-S3_BUCKET_NAME = "your-bucket-name"  # CHANGE THIS
-AWS_REGION = "us-east-1"  # Change if needed
-AWS_PROFILE = None  # Set to your profile name, e.g., "my-profile" or leave None for default
+S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "your-bucket-name")  # Set via env or change here
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+AWS_PROFILE = os.environ.get("AWS_PROFILE", "bird-camera")
 
 # Optional: Local backup directory
 LOCAL_BACKUP_DIR = Path("bird_detections_backup")
@@ -28,12 +29,13 @@ SAVE_ALL_MOTION = True  # Set to False to only save confirmed birds
 
 # YOLO settings
 MODEL_PATH = "yolov8n.pt"
-BIRD_CONFIDENCE = 0.25
+BIRD_CONFIDENCE = 0.15  # Lowered for distant/dark birds on water
 
 # Motion detection settings
-MIN_CONTOUR_AREA = 500      # Minimum size (filters out tiny noise)
+MIN_CONTOUR_AREA = 800      # Increased to filter out water ripples
 MAX_CONTOUR_AREA = 15000    # Maximum size (filters out people/boats)
-MOTION_THRESHOLD = 25        # Sensitivity (lower = more sensitive)
+MOTION_THRESHOLD = 35        # Increased sensitivity threshold (less sensitive)
+MOTION_PERSISTENCE = 2       # Require motion in X out of last 3 frames
 
 # Camera settings
 FRAME_WIDTH = 1920
@@ -78,8 +80,18 @@ class BirdDetectionCamera:
         self.camera.configure(config)
         self.camera.start()
         
-        # Warm up camera
-        time.sleep(2)
+        # Set camera controls for better image quality
+        self.camera.set_controls({
+            "AeEnable": True,           # Auto exposure
+            "AwbEnable": True,          # Auto white balance
+            "Sharpness": 2.0,           # Sharpen images
+            "Contrast": 1.3,            # Boost contrast (helps with duck detection)
+            "Saturation": 1.1,          # Slight saturation boost
+            "ExposureValue": 0.0        # Exposure compensation (adjust if too dark/bright)
+        })
+        
+        # Warm up camera - give it time to adjust
+        time.sleep(3)
         
         print(f"✅ Camera ready ({FRAME_WIDTH}x{FRAME_HEIGHT})")
         print(f"🎯 Bird confidence threshold: {BIRD_CONFIDENCE}")
@@ -110,8 +122,8 @@ class BirdDetectionCamera:
         # Threshold
         _, thresh = cv2.threshold(diff, MOTION_THRESHOLD, 255, cv2.THRESH_BINARY)
         
-        # Dilate to fill gaps
-        thresh = cv2.dilate(thresh, None, iterations=2)
+        # Dilate to fill gaps (reduced to avoid merging ripples)
+        thresh = cv2.dilate(thresh, None, iterations=1)
         
         # Find contours
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -150,22 +162,36 @@ class BirdDetectionCamera:
         # First try full frame
         results = self.model(frame, classes=[14], conf=BIRD_CONFIDENCE, verbose=False)
         
-        # If no birds found and we have motion regions, try cropped regions with lower confidence
+        # If no birds found and we have motion regions, try with contrast enhancement
         if len(results[0].boxes) == 0 and bounding_boxes:
+            # Enhance contrast for dark birds on water
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+            l = clahe.apply(l)
+            enhanced = cv2.merge([l, a, b])
+            enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+            
+            # Try detection on enhanced full frame first
+            enhanced_results = self.model(enhanced, classes=[14], conf=BIRD_CONFIDENCE, verbose=False)
+            if len(enhanced_results[0].boxes) > 0:
+                return enhanced_results[0]
+            
+            # Try cropped regions with lower confidence
             for bbox in bounding_boxes:
                 x1, y1, x2, y2 = bbox
-                cropped = frame[y1:y2, x1:x2]
+                cropped = enhanced[y1:y2, x1:x2]
                 
                 # Skip if crop is too small
                 if cropped.shape[0] < 50 or cropped.shape[1] < 50:
                     continue
                 
                 # Try detection on cropped region with lower confidence
-                crop_results = self.model(cropped, classes=[14], conf=BIRD_CONFIDENCE * 0.7, verbose=False)
+                crop_results = self.model(cropped, classes=[14], conf=BIRD_CONFIDENCE * 0.6, verbose=False)
                 
                 if len(crop_results[0].boxes) > 0:
-                    # Found a bird in the cropped region! Use full frame result
-                    return results[0]
+                    # Found a bird! Return the enhanced full frame results
+                    return enhanced_results[0]
         
         return results[0]
     
@@ -189,18 +215,26 @@ class BirdDetectionCamera:
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         date_folder = now.strftime("%m-%d-%Y")  # MM-DD-YYYY format
         
-        # Count birds and get confidence
-        num_birds = len(result.boxes)
-        confidences = [float(box.conf[0]) for box in result.boxes]
-        avg_conf = sum(confidences) / len(confidences) if confidences else 0
-        
         # Draw padded bounding boxes manually
         annotated_frame = frame.copy()
         BOX_PADDING = 40  # Pixels to pad around each detection
+        MIN_BOX_AREA = 1500  # Minimum box area to filter out tiny false positives (twigs, etc)
 
+        valid_boxes = []
         for box in result.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             conf = float(box.conf[0])
+            
+            # Calculate box size
+            width = x2 - x1
+            height = y2 - y1
+            box_area = width * height
+            
+            # Skip if box is too small (likely debris/twigs)
+            if box_area < MIN_BOX_AREA:
+                continue
+            
+            valid_boxes.append(box)
 
             # Apply padding
             x1 = max(0, x1 - BOX_PADDING)
@@ -213,8 +247,17 @@ class BirdDetectionCamera:
             cv2.putText(annotated_frame, f"bird {conf:.2f}", (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
         
+        # Recalculate bird count and confidence based on valid boxes only
+        num_birds = len(valid_boxes)
+        confidences = [float(box.conf[0]) for box in valid_boxes]
+        avg_conf = sum(confidences) / len(confidences) if confidences else 0
+        
         # Create filename
         filename = f"bird_{timestamp}_count_{num_birds}_conf_{avg_conf:.2f}.jpg"
+        
+        # Skip if no valid birds after filtering
+        if num_birds == 0:
+            return None, 0, 0, None
         
         # S3 key with date folder
         s3_key = f"{date_folder}/{filename}"
@@ -259,6 +302,7 @@ class BirdDetectionCamera:
         
         start_time = datetime.now()
         prev_frame = None
+        motion_history = []  # Track motion over last few frames
         
         motion_detections = 0
         bird_detections = 0
@@ -283,7 +327,16 @@ class BirdDetectionCamera:
                     
                     has_motion, areas, bboxes = self.detect_motion(prev_frame, frame_bgr)
                     
-                    if has_motion:
+                    # Track motion history for persistence check
+                    motion_history.append(has_motion)
+                    if len(motion_history) > 3:
+                        motion_history.pop(0)
+                    
+                    # Only process if motion detected in at least MOTION_PERSISTENCE of last 3 frames
+                    # This filters out single-frame ripples
+                    persistent_motion = motion_history.count(True) >= MOTION_PERSISTENCE
+                    
+                    if persistent_motion and has_motion:
                         motion_detections += 1
                         print(f"\n🚨 Motion #{motion_detections} detected! Areas: {areas}")
                         
@@ -299,11 +352,15 @@ class BirdDetectionCamera:
                         
                         # Check if birds detected
                         if len(result.boxes) > 0:
-                            bird_detections += 1
                             s3_key, num_birds, avg_conf, local_path = self.upload_to_s3(frame_bgr, result)
                             
-                            print(f"   ✅ BIRD DETECTED!")
-                            print(f"   🐦 Birds: {num_birds} | Confidence: {avg_conf:.2f}")
+                            # Check if any valid birds remained after filtering
+                            if num_birds > 0:
+                                bird_detections += 1
+                                print(f"   ✅ BIRD DETECTED!")
+                                print(f"   🐦 Birds: {num_birds} | Confidence: {avg_conf:.2f}")
+                            else:
+                                print(f"   ❌ Birds detected but filtered out (too small)")
                         else:
                             print(f"   ❌ Motion but no birds detected")
                     
@@ -350,4 +407,4 @@ if __name__ == "__main__":
     
     # Run forever (or specify hours)
     # camera.run()  # Run forever
-    camera.run(duration_hours=7)  # Run for 4 hours
+    camera.run(duration_hours=4)  # Run for 4 hours
