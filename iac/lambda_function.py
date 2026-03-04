@@ -51,11 +51,30 @@ def lambda_handler(event, context):
             }
         
         # Filter for bird images only (in case there are other files)
-        bird_images = [
-            obj for obj in response['Contents']
-            if obj['Size'] > 0 and obj['Key'].endswith('.jpg') 
-            # if obj['Key'].endswith('.jpg') and 'birds' in obj['Key']
-        ]
+        # bird_images = [
+        #     obj for obj in response['Contents']
+        #     if obj['Size'] > 0 and obj['Key'].endswith('.jpg') 
+        #     # if obj['Key'].endswith('.jpg') and 'birds' in obj['Key']
+        # ]
+        bird_images = []
+        for obj in response['Contents']:
+            key = obj['Key']
+            
+            if obj['Size'] == 0 or not key.endswith('.jpg'):
+                continue
+            
+            try:
+                # Extract confidence from filename
+                filename = key.split('/')[-1]
+                conf_str = filename.split("conf_")[1].split(".jpg")[0]
+                confidence = float(conf_str)
+                
+                if confidence > 0.55:
+                    bird_images.append(obj)
+            
+            except (IndexError, ValueError):
+                # Skip files that don't match expected naming pattern
+                continue
         
         if len(bird_images) == 0:
             print(f"No bird images found in {prefix}")
@@ -71,7 +90,6 @@ def lambda_handler(event, context):
         key = selected_image['Key']
         timestamp_obj = selected_image['LastModified'] 
         timestamp_image = timestamp_obj.astimezone(uk_tz).strftime("%Y-%m-%d %H:%M:%S")
-
         print(f"Selected random bird image: {key}")
         
         # Download the image
@@ -79,7 +97,8 @@ def lambda_handler(event, context):
         image_data = image_obj['Body'].read()
         
         filename = key.split('/')[-1]
-        confidence = filename.split("conf_")[1].split(".jpg")[0].replace("0.","")
+        confidence_value = float(filename.split("conf_")[1].split(".jpg")[0])
+        confidence_percent = round(confidence_value * 100, 1)
 
 
         
@@ -103,7 +122,7 @@ Here's yesterday's random bird sighting from the River Cam!
 📸 Image: {filename}
 📊 Total bird photos yesterday: {len(bird_images)}
 ⏰ Captured at: {timestamp_image}
-🎯 Detection confidence: {confidence}%
+🎯 Detection confidence: {confidence_percent}%
 
 
 See the attached photo with detection boxes around the bird(s).
